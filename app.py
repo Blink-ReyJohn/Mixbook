@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pymongo import MongoClient
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timedelta
 import random, smtplib, ssl
 from email.message import EmailMessage
 
@@ -53,36 +53,41 @@ def get_order_details(request: OrderRequest):
     try:
         users_collection = db["users"]
         orders_collection = db["orders"]
-
-        # Step 1: Check if the user exists by name
-        user = users_collection.find_one({"name": request.name})
+        
+        # Step 1: Find user
+        user = users_collection.find_one({"name": request.name, "email": request.email})
+        print("Debugging - User Query Result:", user)  # Debugging print
+        
         if not user:
-            raise HTTPException(status_code=404, detail="User with this name not found.")
-
-        # Step 2: Check if the email matches the user's email
-        if user["email"] != request.email:
-            raise HTTPException(status_code=400, detail="Email does not match the user's records.")
-
-        # Step 3: Check if the order exists for the user
-        order = orders_collection.find_one({"_id": request.order_number, "user_id": user["_id"]})
+            raise HTTPException(status_code=404, detail="User not found or email does not match.")
+        
+        # Step 2: Extract user ID
+        user_id = user["_id"]
+        print("Debugging - User ID:", user_id)  # Debugging print
+        
+        # Step 3: Find order
+        order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
+        print("Debugging - Order Query Result:", order)  # Debugging print
+        
         if not order:
             raise HTTPException(status_code=404, detail="Order not found for this user.")
-
-        # Generate OTP and send email
+        
+        # Step 4: Generate OTP
         otp = random.randint(100000, 999999)
         send_otp_email(request.email, otp)
-
+        
+        # Step 5: Prepare response data
         tracking = order.get("tracking_details", {})
-
+        
         response_data = {
             "order_number": order["_id"],
             "items_ordered": order["items_ordered"],
             "total_price": order["total_price"],
             "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
         }
-
+        
         status = tracking.get("status", "Processing")
-
+        
         if status == "Shipped":
             response_data.update({
                 "carrier": tracking.get("carrier", "Unknown"),
@@ -98,9 +103,8 @@ def get_order_details(request: OrderRequest):
             response_data.update({
                 "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
             })
-
+        
         return {"message": "OTP sent to email. Confirm OTP to view order details.", "otp": otp, "order_details": response_data}
-
     except HTTPException as he:
         raise he
     except Exception as e:
