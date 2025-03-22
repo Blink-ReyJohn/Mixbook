@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from pymongo import MongoClient
 from pydantic import BaseModel
 from datetime import datetime
@@ -22,22 +22,16 @@ def format_datetime(dt):
 
 # API Models
 class OrderRequest(BaseModel):
-    email: str
+    order_number: str
 
 @app.post("/getOrderDetails")
 def get_order_details(request: OrderRequest):
     try:
-        users_collection = db["users"]
         orders_collection = db["orders"]
         
-        user = users_collection.find_one({"email": request.email})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found.")
-        
-        user_id = user["_id"]
-        order = orders_collection.find_one({"user_id": user_id})
+        order = orders_collection.find_one({"_id": request.order_number})
         if not order:
-            raise HTTPException(status_code=404, detail="Order not found for this user.")
+            raise HTTPException(status_code=404, detail="Order not found.")
         
         tracking = order.get("tracking_details", {})
         response_data = {
