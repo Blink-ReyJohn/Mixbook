@@ -9,7 +9,8 @@ app = FastAPI()
 
 client = MongoClient("mongodb+srv://reyjohnandraje2002:DarkNikolov17@concentrix.txv3t.mongodb.net/?retryWrites=true&w=majority&appName=Concentrix")
 db = client["mixbook_db"]
-otp_store = {}  # Temporary OTP storage (use Redis or DB in production)
+otp_store = {}  # Temporary OTP storage (should use Redis or DB in production)
+verified_users = set()  # Store verified emails to allow order retrieval
 
 # Function to format dates
 def format_datetime(dt):
@@ -44,57 +45,111 @@ def send_otp_email(email, otp):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending OTP email: {str(e)}")
 
-# API Model
-class OrderRequest(BaseModel):
+# API Models
+class OtpVerifyRequest(BaseModel):
+    name: str
+    order_number: str
+    email: str
+    otp: int = None  # OTP is optional initially
+
+class OrderDetailsRequest(BaseModel):
     name: str
     order_number: str
     email: str
 
-class OtpVerifyRequest(BaseModel):
-    email: str
-    otp: int
-
-@app.post("/getOrderDetails")
-def get_order_details(request: OrderRequest):
+@app.post("/verifyOtp")
+def verify_otp(request: OtpVerifyRequest):
     try:
         users_collection = db["users"]
         orders_collection = db["orders"]
-        
+
         # Step 1: Find User
         user = users_collection.find_one({"name": request.name, "email": request.email})
         print(f"[DEBUG] User Found: {user}")  # Debugging
         if not user:
             raise HTTPException(status_code=404, detail="User not found or email does not match.")
-        
+
         user_id = user["_id"]
         print(f"[DEBUG] User ID: {user_id}")  # Debugging
-        
+
         # Step 2: Find Order
         order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
         print(f"[DEBUG] Order Found: {order}")  # Debugging
         if not order:
             raise HTTPException(status_code=404, detail="Order not found for this user.")
-        
-        # Generate and store OTP
-        otp = random.randint(100000, 999999)
-        otp_store[request.email] = otp
-        send_otp_email(request.email, otp)
-        
-        return {"message": "OTP sent to email. Please verify to view order details."}
-    
+
+        # If OTP is not provided, generate and send one
+        if request.otp is None:
+            otp = random.randint(100000, 999999)
+            otp_store[request.email] = otp
+            send_otp_email(request.email, otp)
+            return {"message": "OTP sent to email. Please verify to view order details."}
+
+        # If OTP is provided, verify it
+        if request.email not in otp_store or otp_store[request.email] != request.otp:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+        # Mark email as verified
+        verified_users.add(request.email)
+        return {"message": "OTP verified successfully. You may now retrieve order details."}
+
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
-@app.post("/verifyOtp")
-def verify_otp(request: OtpVerifyRequest):
+@app.post("/getOrderDetails")
+def get_order_details(request: OrderDetailsRequest):
     try:
-        if request.email not in otp_store or otp_store[request.email] != request.otp:
-            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
-        
-        return {"message": "OTP verified successfully. You can now access your order details."}
-    
+        users_collection = db["users"]
+        orders_collection = db["orders"]
+
+        # Ensure user has verified their OTP
+        if request.email not in verified_users:
+            raise HTTPException(status_code=403, detail="OTP verification required before accessing order details.")
+
+        # Step 1: Find User
+        user = users_collection.find_one({"name": request.name, "email": request.email})
+        print(f"[DEBUG] User Verified: {user}")  # Debugging
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        user_id = user["_id"]
+
+        # Step 2: Find Order
+        order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
+        print(f"[DEBUG] Order Verified: {order}")  # Debugging
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found.")
+
+        tracking = order.get("tracking_details", {})
+        status = tracking.get("status", "Processing")
+
+        response_data = {
+            "order_number": order["_id"],
+            "items_ordered": order["items_ordered"],
+            "total_price": order["total_price"],
+            "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
+        }
+
+        if status == "Shipped":
+            response_data.update({
+                "carrier": tracking.get("carrier", "Unknown"),
+                "estimated_delivery": tracking.get("estimated_delivery", "Unknown"),
+                "current_location": tracking.get("current_location", "Unknown")
+            })
+        elif status == "Delivered":
+            response_data.update({
+                "carrier": tracking.get("carrier", "Unknown"),
+                "current_location": tracking.get("current_location", "Unknown")
+            })
+        elif status == "Cancelled":
+            response_data.update({
+                "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
+            })
+
+        return {"message": "Order details retrieved successfully.", "order_details": response_data}
+
     except HTTPException as he:
         raise he
     except Exception as e:
