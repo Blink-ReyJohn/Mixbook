@@ -3,4 +3,3 @@ uvicorn
 pymongo
 email-validator
 python-dotenv
-smtplib
