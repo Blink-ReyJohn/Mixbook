@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException
 from pymongo import MongoClient
 from pydantic import BaseModel
-from datetime import datetime, timedelta
+from datetime import datetime
 import random, smtplib, ssl
 from email.message import EmailMessage
 
@@ -9,7 +9,7 @@ app = FastAPI()
 
 client = MongoClient("mongodb+srv://reyjohnandraje2002:DarkNikolov17@concentrix.txv3t.mongodb.net/?retryWrites=true&w=majority&appName=Concentrix")
 db = client["mixbook_db"]
-otp_store = {}  # Temporary OTP storage (should use Redis or DB in production)
+otp_store = {}  # Temporary OTP storage (use Redis or DB in production)
 
 # Function to format dates
 def format_datetime(dt):
@@ -80,7 +80,7 @@ def get_order_details(request: OrderRequest):
         otp_store[request.email] = otp
         send_otp_email(request.email, otp)
         
-        return {"message": "OTP sent to email. Confirm OTP to view order details."}
+        return {"message": "OTP sent to email. Please verify to view order details."}
     
     except HTTPException as he:
         raise he
@@ -93,50 +93,7 @@ def verify_otp(request: OtpVerifyRequest):
         if request.email not in otp_store or otp_store[request.email] != request.otp:
             raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
         
-        users_collection = db["users"]
-        orders_collection = db["orders"]
-        
-        # Find User
-        user = users_collection.find_one({"email": request.email})
-        print(f"[DEBUG] User Verified: {user}")  # Debugging
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found.")
-
-        user_id = user["_id"]
-        
-        # Find Order
-        order = orders_collection.find_one({"user_id": user_id})
-        print(f"[DEBUG] Order Verified: {order}")  # Debugging
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found.")
-
-        tracking = order.get("tracking_details", {})
-        response_data = {
-            "order_number": order["_id"],
-            "items_ordered": order["items_ordered"],
-            "total_price": order["total_price"],
-            "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
-        }
-        
-        status = tracking.get("status", "Processing")
-        
-        if status == "Shipped":
-            response_data.update({
-                "carrier": tracking.get("carrier", "Unknown"),
-                "estimated_delivery": tracking.get("estimated_delivery", "Unknown"),
-                "current_location": tracking.get("current_location", "Unknown")
-            })
-        elif status == "Delivered":
-            response_data.update({
-                "carrier": tracking.get("carrier", "Unknown"),
-                "current_location": tracking.get("current_location", "Unknown")
-            })
-        elif status == "Cancelled":
-            response_data.update({
-                "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
-            })
-        
-        return {"message": "OTP verified. Order details retrieved.", "order_details": response_data}
+        return {"message": "OTP verified successfully. You can now access your order details."}
     
     except HTTPException as he:
         raise he
