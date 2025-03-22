@@ -9,6 +9,7 @@ app = FastAPI()
 
 client = MongoClient("mongodb+srv://reyjohnandraje2002:DarkNikolov17@concentrix.txv3t.mongodb.net/?retryWrites=true&w=majority&appName=Concentrix")
 db = client["mixbook_db"]
+otp_store = {}  # Temporary OTP storage (should use Redis or DB in production)
 
 # Function to format dates
 def format_datetime(dt):
@@ -39,6 +40,7 @@ def send_otp_email(email, otp):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
             server.login(sender_email, sender_password)
             server.send_message(msg)
+        print(f"[DEBUG] OTP {otp} sent to {email}")  # Debugging
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending OTP email: {str(e)}")
 
@@ -48,37 +50,67 @@ class OrderRequest(BaseModel):
     order_number: str
     email: str
 
+class OtpVerifyRequest(BaseModel):
+    email: str
+    otp: int
+
 @app.post("/getOrderDetails")
 def get_order_details(request: OrderRequest):
     try:
         users_collection = db["users"]
         orders_collection = db["orders"]
         
-        # Step 1: Find user
+        # Step 1: Find User
         user = users_collection.find_one({"name": request.name, "email": request.email})
-        print("Debugging - User Query Result:", user)  # Debugging print
-        
+        print(f"[DEBUG] User Found: {user}")  # Debugging
         if not user:
             raise HTTPException(status_code=404, detail="User not found or email does not match.")
         
-        # Step 2: Extract user ID
         user_id = user["_id"]
-        print("Debugging - User ID:", user_id)  # Debugging print
+        print(f"[DEBUG] User ID: {user_id}")  # Debugging
         
-        # Step 3: Find order
+        # Step 2: Find Order
         order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
-        print("Debugging - Order Query Result:", order)  # Debugging print
-        
+        print(f"[DEBUG] Order Found: {order}")  # Debugging
         if not order:
             raise HTTPException(status_code=404, detail="Order not found for this user.")
         
-        # Step 4: Generate OTP
+        # Generate and store OTP
         otp = random.randint(100000, 999999)
+        otp_store[request.email] = otp
         send_otp_email(request.email, otp)
         
-        # Step 5: Prepare response data
-        tracking = order.get("tracking_details", {})
+        return {"message": "OTP sent to email. Confirm OTP to view order details."}
+    
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@app.post("/verifyOtp")
+def verify_otp(request: OtpVerifyRequest):
+    try:
+        if request.email not in otp_store or otp_store[request.email] != request.otp:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
         
+        users_collection = db["users"]
+        orders_collection = db["orders"]
+        
+        # Find User
+        user = users_collection.find_one({"email": request.email})
+        print(f"[DEBUG] User Verified: {user}")  # Debugging
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        user_id = user["_id"]
+        
+        # Find Order
+        order = orders_collection.find_one({"user_id": user_id})
+        print(f"[DEBUG] Order Verified: {order}")  # Debugging
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found.")
+
+        tracking = order.get("tracking_details", {})
         response_data = {
             "order_number": order["_id"],
             "items_ordered": order["items_ordered"],
@@ -104,7 +136,8 @@ def get_order_details(request: OrderRequest):
                 "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
             })
         
-        return {"message": "OTP sent to email. Confirm OTP to view order details.", "otp": otp, "order_details": response_data}
+        return {"message": "OTP verified. Order details retrieved.", "order_details": response_data}
+    
     except HTTPException as he:
         raise he
     except Exception as e:
