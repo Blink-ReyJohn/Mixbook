@@ -34,14 +34,15 @@ def get_order_details(request: OrderRequest):
             raise HTTPException(status_code=404, detail="Order not found.")
         
         tracking = order.get("tracking_details", {})
+        status = tracking.get("status", "Processing")
+        
         response_data = {
             "order_number": order["_id"],
             "items_ordered": order["items_ordered"],
             "total_price": order["total_price"],
-            "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
+            "last_update": format_datetime(tracking.get("last_update", datetime.utcnow())),
+            "status": status
         }
-        
-        status = tracking.get("status", "Processing")
         
         if status == "Shipped":
             response_data.update({
