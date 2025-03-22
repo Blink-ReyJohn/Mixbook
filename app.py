@@ -7,12 +7,34 @@ from email.message import EmailMessage
 
 app = FastAPI()
 
+# MongoDB Connection
 client = MongoClient("mongodb+srv://reyjohnandraje2002:DarkNikolov17@concentrix.txv3t.mongodb.net/?retryWrites=true&w=majority&appName=Concentrix")
 db = client["mixbook_db"]
-otp_store = {}  # Temporary OTP storage (should use Redis or DB in production)
-verified_users = set()  # Store verified emails to allow order retrieval
+otp_store = {}  # Temporary storage (should use Redis in production)
 
-# Function to format dates
+# Email Configuration
+SENDER_EMAIL = "reyjohnandraje2002@gmail.com"
+SENDER_PASSWORD = "stqf trus wvku dykn"
+
+# Function to send OTP email
+def send_otp_email(email, otp):
+    msg = EmailMessage()
+    msg.set_content(f"Your OTP for order verification is: {otp}")
+    msg["Subject"] = "Order Verification OTP"
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = email
+    
+    context = ssl.create_default_context()
+    
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+        print(f"[DEBUG] OTP {otp} sent to {email}")  # Debugging
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending OTP email: {str(e)}")
+
+# Function to format datetime
 def format_datetime(dt):
     if isinstance(dt, str):
         try:
@@ -24,133 +46,94 @@ def format_datetime(dt):
                 raise ValueError(f"Unsupported datetime format: {dt}")
     return dt.strftime("%B %d, %Y %I:%M:%S %p")
 
-# Function to send OTP email
-def send_otp_email(email, otp):
-    sender_email = "reyjohnandraje2002@gmail.com"
-    sender_password = "stqf trus wvku dykn"
-    
-    msg = EmailMessage()
-    msg.set_content(f"Your OTP for order verification is: {otp}")
-    msg["Subject"] = "Order Verification OTP"
-    msg["From"] = sender_email
-    msg["To"] = email
-    
-    context = ssl.create_default_context()
-    
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-        print(f"[DEBUG] OTP {otp} sent to {email}")  # Debugging
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error sending OTP email: {str(e)}")
-
 # API Models
-class OtpVerifyRequest(BaseModel):
-    name: str
-    order_number: str
-    email: str
-    otp: int = None  # OTP is optional initially
-
-class OrderDetailsRequest(BaseModel):
+class SendOTPRequest(BaseModel):
     name: str
     order_number: str
     email: str
 
-@app.post("/verifyOtp")
-def verify_otp(request: OtpVerifyRequest):
-    try:
-        users_collection = db["users"]
-        orders_collection = db["orders"]
+class VerifyOTPRequest(BaseModel):
+    email: str
+    otp: int
 
-        # Step 1: Find User
-        user = users_collection.find_one({"name": request.name, "email": request.email})
-        print(f"[DEBUG] User Found: {user}")  # Debugging
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found or email does not match.")
+class GetOrderDetailsRequest(BaseModel):
+    email: str
 
-        user_id = user["_id"]
-        print(f"[DEBUG] User ID: {user_id}")  # Debugging
+# 1️⃣ Send OTP Endpoint
+@app.post("/sendOTP")
+def send_otp(request: SendOTPRequest):
+    users_collection = db["users"]
+    orders_collection = db["orders"]
 
-        # Step 2: Find Order
-        order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
-        print(f"[DEBUG] Order Found: {order}")  # Debugging
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found for this user.")
+    # Check if user exists
+    user = users_collection.find_one({"name": request.name, "email": request.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found or email does not match.")
+    
+    user_id = user["_id"]
 
-        # If OTP is not provided, generate and send one
-        if request.otp is None:
-            otp = random.randint(100000, 999999)
-            otp_store[request.email] = otp
-            send_otp_email(request.email, otp)
-            return {"message": "OTP sent to email. Please verify to view order details."}
+    # Check if order exists for the user
+    order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found for this user.")
 
-        # If OTP is provided, verify it
-        if request.email not in otp_store or otp_store[request.email] != request.otp:
-            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+    # Generate OTP and store it
+    otp = random.randint(100000, 999999)
+    otp_store[request.email] = otp
+    send_otp_email(request.email, otp)
 
-        # Mark email as verified
-        verified_users.add(request.email)
-        return {"message": "OTP verified successfully. You may now retrieve order details."}
+    return {"message": "OTP sent to email. Please verify to view order details."}
 
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+# 2️⃣ Verify OTP Endpoint
+@app.post("/verifyOTP")
+def verify_otp(request: VerifyOTPRequest):
+    if request.email not in otp_store or otp_store[request.email] != request.otp:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
 
+    return {"message": "OTP verified successfully. You may now retrieve order details."}
+
+# 3️⃣ Get Order Details Endpoint
 @app.post("/getOrderDetails")
-def get_order_details(request: OrderDetailsRequest):
-    try:
-        users_collection = db["users"]
-        orders_collection = db["orders"]
+def get_order_details(request: GetOrderDetailsRequest):
+    users_collection = db["users"]
+    orders_collection = db["orders"]
 
-        # Ensure user has verified their OTP
-        if request.email not in verified_users:
-            raise HTTPException(status_code=403, detail="OTP verification required before accessing order details.")
+    # Find User
+    user = users_collection.find_one({"email": request.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
 
-        # Step 1: Find User
-        user = users_collection.find_one({"name": request.name, "email": request.email})
-        print(f"[DEBUG] User Verified: {user}")  # Debugging
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found.")
+    user_id = user["_id"]
 
-        user_id = user["_id"]
+    # Find Order
+    order = orders_collection.find_one({"user_id": user_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
 
-        # Step 2: Find Order
-        order = orders_collection.find_one({"_id": request.order_number, "user_id": user_id})
-        print(f"[DEBUG] Order Verified: {order}")  # Debugging
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found.")
+    tracking = order.get("tracking_details", {})
+    response_data = {
+        "order_number": order["_id"],
+        "items_ordered": order["items_ordered"],
+        "total_price": order["total_price"],
+        "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
+    }
 
-        tracking = order.get("tracking_details", {})
-        status = tracking.get("status", "Processing")
+    status = tracking.get("status", "Processing")
 
-        response_data = {
-            "order_number": order["_id"],
-            "items_ordered": order["items_ordered"],
-            "total_price": order["total_price"],
-            "last_update": format_datetime(tracking.get("last_update", datetime.utcnow()))
-        }
+    if status == "Shipped":
+        response_data.update({
+            "carrier": tracking.get("carrier", "Unknown"),
+            "estimated_delivery": tracking.get("estimated_delivery", "Unknown"),
+            "current_location": tracking.get("current_location", "Unknown")
+        })
+    elif status == "Delivered":
+        response_data.update({
+            "carrier": tracking.get("carrier", "Unknown"),
+            "current_location": tracking.get("current_location", "Unknown")
+        })
+    elif status == "Cancelled":
+        response_data.update({
+            "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
+        })
 
-        if status == "Shipped":
-            response_data.update({
-                "carrier": tracking.get("carrier", "Unknown"),
-                "estimated_delivery": tracking.get("estimated_delivery", "Unknown"),
-                "current_location": tracking.get("current_location", "Unknown")
-            })
-        elif status == "Delivered":
-            response_data.update({
-                "carrier": tracking.get("carrier", "Unknown"),
-                "current_location": tracking.get("current_location", "Unknown")
-            })
-        elif status == "Cancelled":
-            response_data.update({
-                "reason_of_cancellation": order.get("reason_of_cancellation", "Unknown")
-            })
-
-        return {"message": "Order details retrieved successfully.", "order_details": response_data}
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+    return {"message": "Order details retrieved.", "order_details": response_data}
